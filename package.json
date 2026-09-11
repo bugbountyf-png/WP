@@ -8,7 +8,7 @@
   "scripts": {
     "dev": "node scripts/sync-prisma-provider.js && prisma generate && next dev --turbopack",
     "build": "node scripts/sync-prisma-provider.js && prisma generate && next build",
-    "start": "node scripts/sync-prisma-provider.js && prisma migrate deploy && next start",
+    "start": "node scripts/start-production.js",
     "lint": "eslint",
     "db:push": "prisma db push",
     "db:migrate": "prisma migrate deploy",
