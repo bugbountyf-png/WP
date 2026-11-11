@@ -1,0 +1,2 @@
+ALTER TABLE "BudgetItem" ADD COLUMN "paidBy" TEXT;
+ALTER TABLE "Payment" ADD COLUMN "paidBy" TEXT;

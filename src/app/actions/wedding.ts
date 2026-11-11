@@ -9,8 +9,16 @@ import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { appUrl, getCurrentUser } from "@/lib/auth";
 import { requireWedding } from "@/lib/session";
-import { buildChecklist, DOWRY_TASK_TITLES, KUA_TASK_TITLES, SIPIL_TASK_TITLES } from "@/lib/checklist";
-import { parseMoney, uniqueInviteSlug } from "@/lib/utils";
+import {
+  buildChecklist,
+  CLOSED_GUEST_TASK,
+  DOWRY_TASK_TITLES,
+  KUA_TASK_TITLES,
+  OPEN_GUEST_TASK,
+  SIPIL_TASK_TITLES,
+} from "@/lib/checklist";
+import { ensureSavingsPots, renamePartnerPots } from "@/lib/pots";
+import { formatLongDate, parseMoney, startOfUtcDay, toDateInput, uniqueInviteSlug } from "@/lib/utils";
 
 const weddingFields = z.object({
   partnerAName: z.string().trim().min(1, "Isi nama kamu."),
@@ -89,6 +97,7 @@ export async function onboardingAction(formData: FormData) {
     });
   }
 
+  await ensureSavingsPots(wedding);
   redirect("/app");
 }
 
@@ -106,7 +115,9 @@ export async function updateWeddingAction(formData: FormData) {
   });
   if (!parsed.success) return { error: parsed.error.issues[0]?.message ?? "Cek isiannya, ya." };
   const nextDate = new Date(`${parsed.data.weddingDate}T00:00:00.000Z`);
+  const dateChanged = toDateInput(wedding.weddingDate) !== parsed.data.weddingDate;
   const trackChanged = wedding.marriageTrack !== parsed.data.marriageTrack;
+  const typeChanged = wedding.weddingType !== parsed.data.weddingType;
   await prisma.wedding.update({
     where: { id: wedding.id },
     data: {
@@ -114,6 +125,45 @@ export async function updateWeddingAction(formData: FormData) {
       weddingDate: nextDate,
     },
   });
+  await renamePartnerPots(
+    wedding.id,
+    { partnerAName: wedding.partnerAName, partnerBName: wedding.partnerBName },
+    { partnerAName: parsed.data.partnerAName, partnerBName: parsed.data.partnerBName },
+  );
+  let shifted = 0;
+  if (dateChanged) {
+    const delta = startOfUtcDay(nextDate).getTime() - startOfUtcDay(wedding.weddingDate).getTime();
+    const openTasks = await prisma.task.findMany({
+      where: { weddingId: wedding.id, completed: false, dueDate: { not: null } },
+    });
+    const weddingDay = startOfUtcDay(nextDate).getTime();
+    if (openTasks.length && delta) {
+      await prisma.$transaction(
+        openTasks.map((task) => {
+          let due = task.dueDate!.getTime() + delta;
+          if (due >= weddingDay) due = weddingDay - 86_400_000;
+          return prisma.task.update({ where: { id: task.id }, data: { dueDate: new Date(due) } });
+        }),
+      );
+      shifted = openTasks.length;
+    }
+  }
+  if (typeChanged) {
+    const remove = parsed.data.weddingType === "OPEN" ? CLOSED_GUEST_TASK : OPEN_GUEST_TASK;
+    const add = parsed.data.weddingType === "OPEN" ? OPEN_GUEST_TASK : CLOSED_GUEST_TASK;
+    await prisma.task.deleteMany({
+      where: { weddingId: wedding.id, completed: false, title: remove },
+    });
+    const existingTypeTask = await prisma.task.findFirst({ where: { weddingId: wedding.id, title: add } });
+    if (!existingTypeTask) {
+      const task = buildChecklist({
+        weddingDate: nextDate,
+        marriageTrack: parsed.data.marriageTrack,
+        weddingType: parsed.data.weddingType,
+      }).find((row) => row.title === add);
+      if (task) await prisma.task.create({ data: { ...task, weddingId: wedding.id } });
+    }
+  }
   if (trackChanged) {
     const remove = parsed.data.marriageTrack === "KUA" ? SIPIL_TASK_TITLES : [...KUA_TASK_TITLES, ...DOWRY_TASK_TITLES];
     await prisma.task.deleteMany({
@@ -135,7 +185,9 @@ export async function updateWeddingAction(formData: FormData) {
   revalidatePath("/app/checklist");
   revalidatePath("/app/calendar");
   revalidatePath("/app/budget");
-  return { message: "Detail pernikahan sudah disimpan." };
+  const countdown = dateChanged ? ` Hitung mundur sekarang mengikuti ${formatLongDate(nextDate)}.` : "";
+  const tasks = shifted ? ` ${shifted} tenggat tugas yang belum selesai ikut bergeser.` : "";
+  return { message: `Detail pernikahan sudah disimpan.${countdown}${tasks}` };
 }
 
 export async function updateLoveNoteAction(formData: FormData) {
@@ -172,6 +224,7 @@ export async function updateInvitationAction(formData: FormData) {
       musicUrl: String(formData.get("musicUrl") ?? "").trim() || null,
     },
   });
+  revalidatePath("/app");
   revalidatePath("/app/undangan");
   revalidatePath(`/i/${wedding.invitationSlug}`);
   return { message: "Undangannya sudah disimpan. Pratinjau di kanan mengikuti isian yang tersimpan." };
@@ -185,7 +238,7 @@ export async function uploadInvitationPhoto(formData: FormData): Promise<{ error
   if (file.size > 4_500_000) return { error: "Maksimal 4,5 MB." };
   const ext = (file.name.split(".").pop() ?? "").toLowerCase();
   if (!["jpg", "jpeg", "png", "webp"].includes(ext)) return { error: "Pakai JPG, PNG, atau WebP." };
-  const dir = path.join(process.cwd(), "public", "uploads");
+  const dir = path.join(process.cwd(), "data", "uploads");
   await mkdir(dir, { recursive: true });
   const filename = `${wedding.id}-${slot}.${ext}`;
   await writeFile(path.join(dir, filename), Buffer.from(await file.arrayBuffer()));
@@ -193,9 +246,20 @@ export async function uploadInvitationPhoto(formData: FormData): Promise<{ error
   const field =
     slot === "photo2" ? "invitationPhoto2" : slot === "photo3" ? "invitationPhoto3" : "invitationCoverUrl";
   await prisma.wedding.update({ where: { id: wedding.id }, data: { [field]: url } });
+  revalidatePath("/app");
   revalidatePath("/app/undangan");
   revalidatePath(`/i/${wedding.invitationSlug}`);
   return { message: "Foto tersimpan." };
+}
+
+export async function clearInvitationPhoto(formData: FormData): Promise<void> {
+  const { wedding } = await requireWedding();
+  const slot = String(formData.get("slot") ?? "cover");
+  const field = slot === "photo2" ? "invitationPhoto2" : slot === "photo3" ? "invitationPhoto3" : "invitationCoverUrl";
+  await prisma.wedding.update({ where: { id: wedding.id }, data: { [field]: null } });
+  revalidatePath("/app");
+  revalidatePath("/app/undangan");
+  revalidatePath(`/i/${wedding.invitationSlug}`);
 }
 
 export async function invitePartnerAction(formData: FormData) {

@@ -26,7 +26,15 @@ export default async function PublicInvitationPage({
       <div className="mx-auto max-w-lg pb-16">
         <InvitationView wedding={wedding} guestName={guestName} />
         <div className="px-6">
-          <RsvpForm slug={slug} guestName={guestName} token={guest?.inviteToken} />
+          <RsvpForm
+            slug={slug}
+            guestName={guestName}
+            token={guest?.inviteToken}
+            defaultPax={guest?.pax && guest.pax > 0 ? guest.pax : 1}
+            defaultPlusOne={guest?.plusOneName ?? ""}
+            defaultMeal={guest?.mealPreference ?? "STANDARD"}
+            defaultAllergy={guest?.allergy ?? ""}
+          />
           <p className="mt-8 text-center text-xs text-[#6b5e52]">Dibuat di Buma Wedding Planner</p>
         </div>
       </div>

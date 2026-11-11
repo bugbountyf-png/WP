@@ -10,10 +10,18 @@ export function RsvpForm({
   slug,
   guestName,
   token,
+  defaultPax = 1,
+  defaultPlusOne = "",
+  defaultMeal = "STANDARD",
+  defaultAllergy = "",
 }: {
   slug: string;
   guestName?: string | null;
   token?: string | null;
+  defaultPax?: number;
+  defaultPlusOne?: string;
+  defaultMeal?: string;
+  defaultAllergy?: string;
 }) {
   const [state, action] = useActionState(wrapAction(publicRsvp.bind(null, slug)), emptyActionState);
   const [attending, setAttending] = useState("yes");
@@ -36,13 +44,13 @@ export function RsvpForm({
       {attending === "yes" ? (
         <>
           <Field label="Jumlah orang">
-            <Input type="number" name="pax" min={1} defaultValue={1} />
+            <Input type="number" name="pax" min={1} defaultValue={defaultPax} />
           </Field>
           <Field label="Nama plus-one (opsional)">
-            <Input name="plusOneName" />
+            <Input name="plusOneName" defaultValue={defaultPlusOne} />
           </Field>
           <Field label="Menu">
-            <Select name="mealPreference" defaultValue="STANDARD">
+            <Select name="mealPreference" defaultValue={defaultMeal}>
               {MEAL_PREFERENCES.map((m) => (
                 <option key={m} value={m}>
                   {MEAL_LABELS[m]}
@@ -51,7 +59,7 @@ export function RsvpForm({
             </Select>
           </Field>
           <Field label="Alergi">
-            <Input name="allergy" />
+            <Input name="allergy" defaultValue={defaultAllergy} />
           </Field>
         </>
       ) : null}

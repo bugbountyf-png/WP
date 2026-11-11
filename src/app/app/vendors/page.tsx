@@ -1,11 +1,31 @@
 import { createVendor, deleteResearch, deleteVendor, promoteResearch, updateVendor } from "@/app/actions/data";
 import { EmptyState, PageHeader } from "@/components/chrome";
-import { DeleteForm, Field, Input, Select, Submit, Textarea } from "@/components/forms";
+import { DeleteForm, Field, Input, RowActions, Select, Submit, Textarea } from "@/components/forms";
 import { Modal } from "@/components/modal";
-import { BUDGET_CATEGORIES, BUDGET_CATEGORY_LABELS, VENDOR_STATUSES, VENDOR_STATUS_LABELS } from "@/lib/labels";
+import { VENDOR_STATUSES, VENDOR_STATUS_LABELS } from "@/lib/labels";
+import { CategorySelect } from "@/components/category-select";
+import { budgetCategoryName, ensureBudgetCategories } from "@/lib/categories";
+import { PotSelect } from "@/components/pot-select";
+import { ensureSavingsPots } from "@/lib/pots";
 import { prisma } from "@/lib/prisma";
 import { requireWedding } from "@/lib/session";
 import { formatRupiah } from "@/lib/utils";
+import { whatsappHref } from "@/lib/whatsapp";
+
+const STEPS = [
+  { status: "RESEARCHING", label: "Prospek" },
+  { status: "NEGOTIATING", label: "Tanda jadi" },
+  { status: "BOOKED", label: "Kontrak" },
+  { status: "PAID", label: "Selesai" },
+] as const;
+
+function stepIndex(status: string) {
+  if (status === "CONTACTED" || status === "RESEARCHING") return 0;
+  if (status === "NEGOTIATING") return 1;
+  if (status === "BOOKED") return 2;
+  if (status === "PAID") return 3;
+  return -1;
+}
 
 const PIPELINE = {
   riset: ["RESEARCHING", "CONTACTED"],
@@ -21,6 +41,7 @@ export default async function VendorsPage({
 }) {
   const { tahap } = await searchParams;
   const { wedding } = await requireWedding();
+  const [catalog, categories] = await Promise.all([ensureSavingsPots(wedding), ensureBudgetCategories(wedding.id)]);
   const [vendors, researches] = await Promise.all([
     prisma.vendor.findMany({ where: { weddingId: wedding.id }, orderBy: { createdAt: "desc" } }),
     prisma.research.findMany({ where: { weddingId: wedding.id }, orderBy: { createdAt: "desc" } }),
@@ -38,6 +59,8 @@ export default async function VendorsPage({
               ? null
               : [...PIPELINE.riset, ...PIPELINE.proses, ...PIPELINE.booked];
   const rows = filter ? vendors.filter((v) => filter.includes(v.status)) : vendors;
+  const deals = vendors.filter((vendor) => vendor.status === "BOOKED" || vendor.status === "PAID");
+  const contractTotal = deals.reduce((sum, vendor) => sum + vendor.price, 0);
   const showLegacy = !tahap || tahap === "riset" || tahap === "semua";
 
   return (
@@ -53,13 +76,11 @@ export default async function VendorsPage({
                 <Input name="name" required />
               </Field>
               <Field label="Kategori">
-                <Select name="category" defaultValue="WEDDING_ORGANIZER">
-                  {BUDGET_CATEGORIES.map((c) => (
-                    <option key={c} value={c}>
-                      {BUDGET_CATEGORY_LABELS[c]}
-                    </option>
-                  ))}
-                </Select>
+                <CategorySelect
+                  categories={categories}
+                  name="category"
+                  defaultValue={categories.find((row) => row.name.trim().toLowerCase() === "wedding organizer")?.id}
+                />
               </Field>
               <Field label="Status">
                 <Select name="status" defaultValue="RESEARCHING">
@@ -81,6 +102,9 @@ export default async function VendorsPage({
               </Field>
               <Field label="DP">
                 <Input name="deposit" inputMode="numeric" />
+              </Field>
+              <Field label="DP dibayar dari">
+                <PotSelect pots={catalog} name="paidBy" defaultValue={catalog[0]?.id} />
               </Field>
               <Field label="Kontak">
                 <Input name="contactName" />
@@ -105,7 +129,16 @@ export default async function VendorsPage({
           </Modal>
         }
       />
-      <div className="gutter flex flex-wrap gap-3 text-sm">
+      <section className="gutter">
+        <div className="surface p-4">
+          <div className="flex items-end justify-between gap-3">
+            <p className="text-sm text-muted-foreground">Total kontrak vendor deal</p>
+            <p className="display text-xl">{formatRupiah(contractTotal)}</p>
+          </div>
+          <p className="mt-2 text-xs text-muted-foreground">{deals.length} deal dari {vendors.length} vendor</p>
+        </div>
+      </section>
+      <div className="gutter mt-4 flex flex-wrap gap-3 text-sm">
         <a href="/app/vendors" className={!tahap ? "font-medium text-foreground" : "text-muted-foreground"}>
           Aktif
         </a>
@@ -133,7 +166,7 @@ export default async function VendorsPage({
                     <div>
                       <p className="font-medium">{row.name}</p>
                       <p className="text-xs text-muted-foreground">
-                        Kandidat lama · {BUDGET_CATEGORY_LABELS[row.category as keyof typeof BUDGET_CATEGORY_LABELS] ?? row.category}
+                        Kandidat lama · {budgetCategoryName(categories, row.category)}
                         {row.location ? ` · ${row.location}` : ""}
                       </p>
                       <p className="mt-1 text-sm">
@@ -156,15 +189,43 @@ export default async function VendorsPage({
                 <div>
                   <p className="font-medium">{row.name}</p>
                   <p className="text-xs text-muted-foreground">
-                    {BUDGET_CATEGORY_LABELS[row.category as keyof typeof BUDGET_CATEGORY_LABELS] ?? row.category} ·{" "}
+                    {budgetCategoryName(categories, row.category)} ·{" "}
                     {VENDOR_STATUS_LABELS[row.status as keyof typeof VENDOR_STATUS_LABELS] ?? row.status}
                     {row.location ? ` · ${row.location}` : ""}
                   </p>
                   <p className="mt-1 text-sm">
-                    {formatRupiah(row.price)} · dibayar {formatRupiah(row.deposit)} · sisa {formatRupiah(Math.max(0, row.price - row.deposit))}
+                    Nilai kontrak {formatRupiah(row.price)}
                   </p>
+                  {row.phone ? (
+                    <div className="mt-2 flex gap-3 text-sm">
+                      <a href={`tel:${row.phone}`} className="text-primary">Telepon</a>
+                      <a href={whatsappHref(row.phone, `Halo ${row.name}, saya ingin menanyakan vendor pernikahan kami.`)} className="text-primary">WhatsApp</a>
+                    </div>
+                  ) : null}
                 </div>
-                <DeleteForm action={deleteVendor.bind(null, row.id)} />
+                <RowActions>
+                  <Modal triggerLabel="Ubah" variant="ghost" title="Ubah vendor">
+                    <form action={updateVendor} className="grid gap-4">
+                      <input type="hidden" name="id" value={row.id} />
+                      <input type="hidden" name="status" value={row.status} />
+                      <input type="hidden" name="recordBudget" value={row.status === "BOOKED" || row.status === "PAID" ? "yes" : "no"} />
+                      <Field label="Nama"><Input name="name" defaultValue={row.name} required /></Field>
+                      <Field label="Kategori">
+                        <CategorySelect categories={categories} name="category" defaultValue={row.category} />
+                      </Field>
+                      <Field label="Harga"><Input name="price" inputMode="numeric" defaultValue={String(row.price)} /></Field>
+                      <Field label="DP"><Input name="deposit" inputMode="numeric" defaultValue={String(row.deposit)} /></Field>
+                      <Field label="Telepon"><Input name="phone" defaultValue={row.phone ?? ""} /></Field>
+                      <Field label="Lokasi"><Input name="location" defaultValue={row.location ?? ""} /></Field>
+                      <Field label="Kontak"><Input name="contactName" defaultValue={row.contactName ?? ""} /></Field>
+                      <Field label="Instagram"><Input name="instagram" defaultValue={row.instagram ?? ""} /></Field>
+                      <Field label="Rating"><Input name="rating" type="number" min={0} max={5} defaultValue={row.rating} /></Field>
+                      <Field label="Catatan"><Textarea name="notes" defaultValue={row.notes ?? ""} /></Field>
+                      <Submit>Simpan</Submit>
+                    </form>
+                  </Modal>
+                  <DeleteForm action={deleteVendor.bind(null, row.id)} />
+                </RowActions>
               </div>
               <form action={updateVendor} className="mt-3 flex flex-wrap items-end gap-2">
                 <input type="hidden" name="id" value={row.id} />
@@ -178,13 +239,19 @@ export default async function VendorsPage({
                 <input type="hidden" name="phone" value={row.phone ?? ""} />
                 <input type="hidden" name="instagram" value={row.instagram ?? ""} />
                 <input type="hidden" name="notes" value={row.notes ?? ""} />
-                <Select name="status" defaultValue={row.status} className="w-44">
-                  {VENDOR_STATUSES.map((s) => (
-                    <option key={s} value={s}>
-                      {VENDOR_STATUS_LABELS[s]}
-                    </option>
+                <div className="grid w-full grid-cols-4 gap-1">
+                  {STEPS.map((step, index) => (
+                    <button
+                      key={step.status}
+                      type="submit"
+                      name="status"
+                      value={step.status}
+                      className={`rounded-md px-1 py-2 text-[0.65rem] ${index <= stepIndex(row.status) ? "bg-primary/15 font-medium text-primary" : "bg-muted text-muted-foreground"}`}
+                    >
+                      {step.label}
+                    </button>
                   ))}
-                </Select>
+                </div>
                 <Select name="recordBudget" defaultValue={row.status === "BOOKED" || row.status === "PAID" ? "yes" : "no"} className="w-44">
                   <option value="no">Status saja</option>
                   <option value="yes">Catat di budget</option>

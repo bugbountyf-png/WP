@@ -28,7 +28,7 @@ export function WeddingSettingsForm(props: {
           <Input name="partnerBName" defaultValue={props.partnerBName} required />
         </Field>
       </div>
-      <Field label="Tanggal">
+      <Field label="Tanggal" hint="Mengubah tanggal menggeser hitung mundur dan tenggat tugas yang belum selesai. Jadwal bayar vendor tidak ikut pindah.">
         <Input type="date" name="weddingDate" defaultValue={toDateInput(props.weddingDate)} required />
       </Field>
       <Field label="Lokasi">

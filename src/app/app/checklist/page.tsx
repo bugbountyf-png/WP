@@ -45,6 +45,13 @@ export default async function ChecklistPage() {
                   </Select>
                 </Field>
               </div>
+              <Field label="PIC">
+                <Select name="assignee" defaultValue="SHARED">
+                  <option value="SHARED">Bersama</option>
+                  <option value="CPP">Mempelai pria</option>
+                  <option value="CPW">Mempelai wanita</option>
+                </Select>
+              </Field>
               <Field label="Tenggat" hint="Kosongkan kalau nggak ada tenggatnya.">
                 <Input type="date" name="dueDate" />
               </Field>
@@ -69,7 +76,9 @@ export default async function ChecklistPage() {
             priority: task.priority,
             notes: task.notes,
             completed: task.completed,
+            assignee: task.assignee,
           }))}
+          weddingDate={wedding.weddingDate.toISOString()}
         />
       )}
     </div>

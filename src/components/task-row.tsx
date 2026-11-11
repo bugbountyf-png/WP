@@ -2,8 +2,10 @@
 
 import { useMemo, useState } from "react";
 import { deleteTask, toggleTask, updateTask } from "@/app/actions/data";
+import { DeleteForm, RowActions } from "@/components/forms";
 import { Button, Field, Input, Select, Textarea } from "@/components/ui";
 import { TASK_CATEGORIES, TASK_CATEGORY_LABELS } from "@/lib/labels";
+import { phaseLabel, picLabel, taskPhase } from "@/lib/tasks";
 import { daysUntil, formatShortDate, toDateInput } from "@/lib/utils";
 
 export type TaskRowData = {
@@ -15,6 +17,7 @@ export type TaskRowData = {
   priority: string;
   notes: string | null;
   completed: boolean;
+  assignee: string;
 };
 
 function dueHint(iso: string | null) {
@@ -25,7 +28,7 @@ function dueHint(iso: string | null) {
   return `${Math.abs(days)} hari lalu`;
 }
 
-export function TaskRow({ task }: { task: TaskRowData }) {
+export function TaskRow({ task, weddingDate }: { task: TaskRowData; weddingDate: string }) {
   const [open, setOpen] = useState(false);
   const [due, setDue] = useState(task.dueDate ? toDateInput(task.dueDate) : "");
   const hint = useMemo(() => dueHint(due || null), [due]);
@@ -45,7 +48,10 @@ export function TaskRow({ task }: { task: TaskRowData }) {
           <p className={task.completed ? "text-sm text-muted-foreground line-through" : "text-sm font-medium"}>{task.title}</p>
           {task.description ? <p className="mt-1 text-xs text-muted-foreground">{task.description}</p> : null}
           <p className="mt-1 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+            <span className="rounded-full bg-muted px-2 py-0.5">{phaseLabel(taskPhase(task.dueDate, weddingDate))}</span>
+            <span className="rounded-full bg-primary/10 px-2 py-0.5 text-primary">PIC: {picLabel(task.assignee)}</span>
             {task.dueDate ? formatShortDate(task.dueDate) : "Tanpa tenggat"}
+            <span className="text-primary">Ubah</span>
             {task.priority === "HIGH" ? (
               <span className="rounded-full bg-tone-marigold-soft px-1.5 py-0.5 text-[0.65rem] font-medium text-tone-marigold">
                 {overdue ? "Terlambat" : "Mendesak"}
@@ -53,6 +59,9 @@ export function TaskRow({ task }: { task: TaskRowData }) {
             ) : null}
           </p>
         </button>
+        <RowActions>
+          <DeleteForm action={deleteTask.bind(null, task.id)} />
+        </RowActions>
       </li>
 
       {open ? (
@@ -94,6 +103,13 @@ export function TaskRow({ task }: { task: TaskRowData }) {
                   </Select>
                 </Field>
               </div>
+              <Field label="PIC">
+                <Select name="assignee" defaultValue={task.assignee || "SHARED"}>
+                  <option value="SHARED">Bersama</option>
+                  <option value="CPP">Mempelai pria</option>
+                  <option value="CPW">Mempelai wanita</option>
+                </Select>
+              </Field>
               <Field label="Tenggat" hint={hint}>
                 <Input type="date" name="dueDate" value={due} onChange={(e) => setDue(e.target.value)} />
               </Field>

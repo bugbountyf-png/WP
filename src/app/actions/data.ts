@@ -2,10 +2,12 @@
 
 import crypto from "crypto";
 import { revalidatePath } from "next/cache";
+import { redirect } from "next/navigation";
 import { prisma } from "@/lib/prisma";
 import { requireWedding } from "@/lib/session";
 import { parseCsv } from "@/lib/csv";
-import { parseMoney } from "@/lib/utils";
+import { parseMoney, todayInApp } from "@/lib/utils";
+import { ensureBudgetCategories, resolveBudgetCategory } from "@/lib/categories";
 import { applyPaidPayment, reconcileVendorMoney } from "@/lib/vendor-money";
 import { withPlusOnePax } from "@/lib/guests";
 
@@ -36,6 +38,21 @@ function mapMeal(raw: string) {
   return "STANDARD";
 }
 
+function mapAssignee(value: FormDataEntryValue | null) {
+  const raw = String(value ?? "").trim().toUpperCase();
+  if (raw === "CPP" || raw === "CPW" || raw === "SHARED") return raw;
+  return "SHARED";
+}
+
+function mapMoneySide(value: FormDataEntryValue | null) {
+  const raw = String(value ?? "").trim();
+  if (!raw) return null;
+  const upper = raw.toUpperCase();
+  if (upper === "CPP" || upper === "CPW" || upper === "MAMA" || upper === "SHARED") return upper;
+  if (/^[\w-]{8,40}$/.test(raw)) return raw;
+  return null;
+}
+
 function dateOrNull(value: FormDataEntryValue | null) {
   const raw = String(value ?? "").trim();
   return raw ? new Date(`${raw}T00:00:00.000Z`) : null;
@@ -59,6 +76,7 @@ export async function createTask(formData: FormData) {
       category: String(formData.get("category") ?? "OTHER"),
       dueDate: dateOrNull(formData.get("dueDate")),
       priority: String(formData.get("priority") ?? "MEDIUM"),
+      assignee: mapAssignee(formData.get("assignee")),
       notes: String(formData.get("notes") ?? "").trim() || null,
     },
   });
@@ -84,6 +102,7 @@ export async function updateTask(formData: FormData): Promise<void> {
       title: String(formData.get("title") ?? "").trim(),
       category: String(formData.get("category") ?? "OTHER"),
       priority: String(formData.get("priority") ?? "MEDIUM"),
+      assignee: mapAssignee(formData.get("assignee")),
       dueDate: dateOrNull(formData.get("dueDate")),
       notes: String(formData.get("notes") ?? "").trim() || null,
     },
@@ -101,16 +120,15 @@ export async function createBudgetItem(formData: FormData) {
   const { wedding } = await requireWedding();
   const estimated = parseMoney(formData.get("estimatedCost"));
   const actual = parseMoney(formData.get("actualCost"));
-  const paid = parseMoney(formData.get("paidAmount"));
   const vendorId = String(formData.get("vendorId") ?? "").trim() || null;
   await prisma.budgetItem.create({
     data: {
       weddingId: wedding.id,
       name: String(formData.get("name") ?? "").trim(),
-      category: String(formData.get("category") ?? "OTHER"),
+      category: await resolveBudgetCategory(wedding.id, formData.get("category")),
       estimatedCost: estimated,
       actualCost: actual,
-      paidAmount: paid,
+      paidAmount: 0,
       vendorId,
       notes: String(formData.get("notes") ?? "").trim() || null,
     },
@@ -128,10 +146,9 @@ export async function updateBudgetItem(formData: FormData): Promise<void> {
     where: { id, weddingId: wedding.id },
     data: {
       name: String(formData.get("name") ?? "").trim(),
-      category: String(formData.get("category") ?? "OTHER"),
+      category: await resolveBudgetCategory(wedding.id, formData.get("category")),
       estimatedCost: parseMoney(formData.get("estimatedCost")),
       actualCost: parseMoney(formData.get("actualCost")),
-      paidAmount: parseMoney(formData.get("paidAmount")),
       vendorId,
       notes: String(formData.get("notes") ?? "").trim() || null,
     },
@@ -157,19 +174,71 @@ export async function updatePlafon(formData: FormData): Promise<void> {
 
 export async function createPayment(formData: FormData) {
   const { wedding } = await requireWedding();
-  const vendorId = String(formData.get("vendorId") ?? "").trim() || null;
+  const paidBy = mapMoneySide(formData.get("paidBy"));
+  if (!paidBy) redirect("/app/budget?tab=payments&bayar=pot");
+  const itemId = String(formData.get("itemId") ?? "").trim();
+  let title = String(formData.get("title") ?? "").trim();
+  let vendorId = String(formData.get("vendorId") ?? "").trim() || null;
+  if (itemId) {
+    const item = await prisma.budgetItem.findFirst({ where: { id: itemId, weddingId: wedding.id } });
+    if (item) {
+      title = title || item.name;
+      vendorId = vendorId ?? item.vendorId;
+    }
+  }
+  const paidOn = dateOrNull(formData.get("paidDate")) ?? todayInApp();
   await prisma.payment.create({
     data: {
       weddingId: wedding.id,
       vendorId,
-      title: String(formData.get("title") ?? "").trim(),
+      title: title || "Pembayaran",
       amount: parseMoney(formData.get("amount")),
-      dueDate: dateRequired(formData.get("dueDate")),
-      paidDate: dateOrNull(formData.get("paidDate")),
+      dueDate: paidOn,
+      paidDate: paidOn,
+      paidBy,
       notes: String(formData.get("notes") ?? "").trim() || null,
     },
   });
   if (vendorId) await reconcileVendorMoney(wedding.id, vendorId);
+  await touch(["/app/budget", "/app/calendar", "/app", "/app/vendors"]);
+}
+
+export async function recordItemPayment(formData: FormData) {
+  const { wedding } = await requireWedding();
+  const itemId = String(formData.get("itemId") ?? "");
+  const paidBy = mapMoneySide(formData.get("paidBy"));
+  const amount = parseMoney(formData.get("amount"));
+  if (!itemId || amount <= 0) return;
+  if (!paidBy) redirect("/app/budget?bayar=pot");
+  const item = await prisma.budgetItem.findFirst({ where: { id: itemId, weddingId: wedding.id } });
+  if (!item) return;
+  const paidOn = dateOrNull(formData.get("paidDate")) ?? todayInApp();
+  if (item.vendorId) {
+    const unpaid = await prisma.payment.findFirst({
+      where: { weddingId: wedding.id, vendorId: item.vendorId, paidDate: null, amount },
+    });
+    if (unpaid) {
+      await prisma.payment.update({
+        where: { id: unpaid.id },
+        data: { paidDate: paidOn, paidBy },
+      });
+      await reconcileVendorMoney(wedding.id, item.vendorId);
+      await touch(["/app/budget", "/app/calendar", "/app", "/app/vendors"]);
+      return;
+    }
+  }
+  await prisma.payment.create({
+    data: {
+      weddingId: wedding.id,
+      vendorId: item.vendorId,
+      title: item.name,
+      amount,
+      dueDate: paidOn,
+      paidDate: paidOn,
+      paidBy,
+    },
+  });
+  if (item.vendorId) await reconcileVendorMoney(wedding.id, item.vendorId);
   await touch(["/app/budget", "/app/calendar", "/app", "/app/vendors"]);
 }
 
@@ -178,13 +247,17 @@ export async function updatePayment(formData: FormData): Promise<void> {
   const id = String(formData.get("id") ?? "");
   if (!id) return;
   const vendorId = String(formData.get("vendorId") ?? "").trim() || null;
+  const due = dateOrNull(formData.get("dueDate"));
+  const paidOn = dateOrNull(formData.get("paidDate"));
   await prisma.payment.updateMany({
     where: { id, weddingId: wedding.id },
     data: {
       title: String(formData.get("title") ?? "").trim(),
       amount: parseMoney(formData.get("amount")),
-      dueDate: dateRequired(formData.get("dueDate")),
+      ...(due ? { dueDate: due } : {}),
+      ...(paidOn ? { paidDate: paidOn } : {}),
       vendorId,
+      paidBy: mapMoneySide(formData.get("paidBy")),
       notes: String(formData.get("notes") ?? "").trim() || null,
     },
   });
@@ -192,9 +265,13 @@ export async function updatePayment(formData: FormData): Promise<void> {
   await touch(["/app/budget", "/app/calendar", "/app", "/app/vendors"]);
 }
 
-export async function markPaymentPaid(id: string) {
+export async function markPaymentPaid(formData: FormData) {
   const { wedding } = await requireWedding();
-  await applyPaidPayment(wedding.id, id);
+  const id = String(formData.get("id") ?? "");
+  const paidBy = mapMoneySide(formData.get("paidBy"));
+  if (!id) return;
+  if (!paidBy) redirect("/app/budget?tab=payments&bayar=pot");
+  await applyPaidPayment(wedding.id, id, paidBy);
   await touch(["/app/budget", "/app/calendar", "/app", "/app/vendors"]);
 }
 
@@ -217,17 +294,11 @@ async function maybeLinkVendorBudget(input: {
   recordBudget: boolean;
 }) {
   if (!input.recordBudget || input.price <= 0) return;
-  if (!["BOOKED", "PAID", "NEGOTIATING"].includes(input.status)) return;
+  if (!["BOOKED", "PAID"].includes(input.status)) return;
   const existing = await prisma.budgetItem.findFirst({
     where: { weddingId: input.weddingId, vendorId: input.vendorId },
   });
-  if (existing) {
-    await prisma.budgetItem.update({
-      where: { id: existing.id },
-      data: { estimatedCost: input.price, paidAmount: input.deposit || existing.paidAmount },
-    });
-    return;
-  }
+  if (existing) return;
   await prisma.budgetItem.create({
     data: {
       weddingId: input.weddingId,
@@ -247,7 +318,7 @@ export async function createVendor(formData: FormData) {
   const price = parseMoney(formData.get("price"));
   const deposit = parseMoney(formData.get("deposit"));
   const name = String(formData.get("name") ?? "").trim();
-  const category = String(formData.get("category") ?? "OTHER");
+  const category = await resolveBudgetCategory(wedding.id, formData.get("category"));
   const vendor = await prisma.vendor.create({
     data: {
       weddingId: wedding.id,
@@ -275,8 +346,11 @@ export async function createVendor(formData: FormData) {
     status,
     recordBudget: String(formData.get("recordBudget") ?? "") === "yes" || ["BOOKED", "PAID"].includes(status),
   });
-  if (["BOOKED", "PAID", "NEGOTIATING"].includes(status) && price > 0) {
-    await reconcileVendorMoney(wedding.id, vendor.id);
+  if (["BOOKED", "PAID"].includes(status) && price > 0) {
+    await reconcileVendorMoney(wedding.id, vendor.id, {
+      seedDeposit: deposit > 0,
+      paidBy: mapMoneySide(formData.get("paidBy")),
+    });
   }
   await touch(["/app/vendors", "/app/budget", "/app", "/app/calendar"]);
 }
@@ -289,7 +363,7 @@ export async function updateVendor(formData: FormData): Promise<void> {
   const price = parseMoney(formData.get("price"));
   const deposit = parseMoney(formData.get("deposit"));
   const name = String(formData.get("name") ?? "").trim();
-  const category = String(formData.get("category") ?? "OTHER");
+  const category = await resolveBudgetCategory(wedding.id, formData.get("category"));
   await prisma.vendor.updateMany({
     where: { id, weddingId: wedding.id },
     data: {
@@ -316,7 +390,7 @@ export async function updateVendor(formData: FormData): Promise<void> {
     status,
     recordBudget: String(formData.get("recordBudget") ?? "") === "yes" || ["BOOKED", "PAID"].includes(status),
   });
-  if (["BOOKED", "PAID", "NEGOTIATING"].includes(status) && price > 0) {
+  if (["BOOKED", "PAID"].includes(status) && price > 0) {
     await reconcileVendorMoney(wedding.id, id);
   }
   await touch(["/app/vendors", "/app/budget", "/app", "/app/calendar"]);
@@ -324,8 +398,10 @@ export async function updateVendor(formData: FormData): Promise<void> {
 
 export async function deleteVendor(id: string) {
   const { wedding } = await requireWedding();
+  await prisma.payment.deleteMany({ where: { weddingId: wedding.id, vendorId: id } });
+  await prisma.budgetItem.deleteMany({ where: { weddingId: wedding.id, vendorId: id } });
   await prisma.vendor.deleteMany({ where: { id, weddingId: wedding.id } });
-  await touch(["/app/vendors", "/app", "/app/budget"]);
+  await touch(["/app/vendors", "/app", "/app/budget", "/app/calendar"]);
 }
 
 export async function promoteResearch(id: string): Promise<void> {
@@ -427,10 +503,19 @@ export async function importGuests(formData: FormData): Promise<{ message?: stri
   const text = await file.text();
   const rows = parseCsv(text);
   if (rows.length === 0) return { error: "CSV-nya kosong atau header-nya tidak kebaca." };
+  const existing = await prisma.guest.findMany({ where: { weddingId: wedding.id }, select: { name: true } });
+  const seen = new Set(existing.map((guest) => guest.name.trim().toLowerCase()));
   let created = 0;
+  let skipped = 0;
   for (const row of rows) {
     const name = (row.nama || row.name || "").trim();
     if (!name) continue;
+    const key = name.toLowerCase();
+    if (seen.has(key)) {
+      skipped += 1;
+      continue;
+    }
+    seen.add(key);
     await prisma.guest.create({
       data: {
         weddingId: wedding.id,
@@ -456,7 +541,11 @@ export async function importGuests(formData: FormData): Promise<{ message?: stri
     created += 1;
   }
   await touch(["/app/guests", "/app"]);
-  return { message: `${created} tamu masuk dari CSV.` };
+  return {
+    message: skipped
+      ? `${created} tamu masuk. ${skipped} nama yang sudah ada dilewati.`
+      : `${created} tamu masuk dari CSV.`,
+  };
 }
 
 export async function assignGuestTable(formData: FormData): Promise<void> {
@@ -494,6 +583,24 @@ export async function deleteTimeline(id: string) {
   await touch(["/app/timeline"]);
 }
 
+export async function updateTimeline(formData: FormData): Promise<void> {
+  const { wedding } = await requireWedding();
+  const id = String(formData.get("id") ?? "");
+  if (!id) return;
+  await prisma.timelineEvent.updateMany({
+    where: { id, weddingId: wedding.id },
+    data: {
+      time: String(formData.get("time") ?? "08:00"),
+      title: String(formData.get("title") ?? "").trim(),
+      description: String(formData.get("description") ?? "").trim() || null,
+      location: String(formData.get("location") ?? "").trim() || null,
+      pic: String(formData.get("pic") ?? "").trim() || null,
+      notes: String(formData.get("notes") ?? "").trim() || null,
+    },
+  });
+  await touch(["/app/timeline"]);
+}
+
 export async function createSong(formData: FormData) {
   const { wedding } = await requireWedding();
   await prisma.song.create({
@@ -511,6 +618,22 @@ export async function createSong(formData: FormData) {
 export async function deleteSong(id: string) {
   const { wedding } = await requireWedding();
   await prisma.song.deleteMany({ where: { id, weddingId: wedding.id } });
+  await touch(["/app/timeline"]);
+}
+
+export async function updateSong(formData: FormData): Promise<void> {
+  const { wedding } = await requireWedding();
+  const id = String(formData.get("id") ?? "");
+  if (!id) return;
+  await prisma.song.updateMany({
+    where: { id, weddingId: wedding.id },
+    data: {
+      title: String(formData.get("title") ?? "").trim(),
+      artist: String(formData.get("artist") ?? "").trim() || null,
+      moment: String(formData.get("moment") ?? "OTHER"),
+      notes: String(formData.get("notes") ?? "").trim() || null,
+    },
+  });
   await touch(["/app/timeline"]);
 }
 
@@ -542,7 +665,7 @@ export async function createSavings(formData: FormData) {
       weddingId: wedding.id,
       amount: kind === "WITHDRAWAL" ? -Math.abs(amount) : Math.abs(amount),
       occurredOn: dateRequired(formData.get("occurredOn")),
-      side: String(formData.get("side") ?? "") || null,
+      side: mapMoneySide(formData.get("side")),
       note: String(formData.get("note") ?? "").trim() || null,
     },
   });
@@ -560,7 +683,7 @@ export async function updateSavings(formData: FormData): Promise<void> {
     data: {
       amount: kind === "WITHDRAWAL" ? -Math.abs(amount) : Math.abs(amount),
       occurredOn: dateRequired(formData.get("occurredOn")),
-      side: String(formData.get("side") ?? "") || null,
+      side: mapMoneySide(formData.get("side")),
       note: String(formData.get("note") ?? "").trim() || null,
     },
   });
@@ -573,6 +696,64 @@ export async function deleteSavings(id: string) {
   await touch(["/app/budget", "/app"]);
 }
 
+export async function createBudgetCategory(name: string): Promise<{ error?: string; category?: { id: string; name: string } }> {
+  const { wedding } = await requireWedding();
+  const trimmed = name.trim().slice(0, 40);
+  if (!trimmed) return { error: "Isi nama kategorinya." };
+  const categories = await ensureBudgetCategories(wedding.id);
+  if (categories.some((row) => row.name.trim().toLowerCase() === trimmed.toLowerCase())) {
+    return { error: "Nama kategori itu sudah ada." };
+  }
+  const sortOrder = categories.reduce((max, row) => Math.max(max, row.sortOrder), 0) + 1;
+  const row = await prisma.budgetCategory.create({ data: { weddingId: wedding.id, name: trimmed, sortOrder } });
+  await touch(["/app/budget", "/app/vendors"]);
+  return { category: { id: row.id, name: row.name } };
+}
+
+export async function deleteBudgetCategory(id: string): Promise<{ error?: string }> {
+  const { wedding } = await requireWedding();
+  if (!id) return { error: "Kategori tidak ditemukan." };
+  const categories = await ensureBudgetCategories(wedding.id);
+  if (!categories.some((row) => row.id === id)) return { error: "Kategori tidak ditemukan." };
+  if (categories.length <= 1) return { error: "Sisakan minimal satu kategori." };
+  const [items, vendors, researches] = await Promise.all([
+    prisma.budgetItem.count({ where: { weddingId: wedding.id, category: id } }),
+    prisma.vendor.count({ where: { weddingId: wedding.id, category: id } }),
+    prisma.research.count({ where: { weddingId: wedding.id, category: id } }),
+  ]);
+  if (items + vendors + researches > 0) return { error: "Kategori ini masih dipakai, jadi belum bisa dihapus." };
+  await prisma.budgetCategory.deleteMany({ where: { id, weddingId: wedding.id } });
+  await touch(["/app/budget", "/app/vendors"]);
+  return {};
+}
+
+export async function createSavingsPot(formData: FormData) {
+  const { wedding } = await requireWedding();
+  const name = String(formData.get("name") ?? "").trim().slice(0, 40);
+  if (!name) return;
+  const pots = await prisma.savingsPot.findMany({ where: { weddingId: wedding.id } });
+  if (pots.some((pot) => pot.name.trim().toLowerCase() === name.toLowerCase())) {
+    redirect("/app/budget?tab=tabungan&pot=ganda");
+  }
+  await prisma.savingsPot.create({ data: { weddingId: wedding.id, name } });
+  await touch(["/app/budget", "/app"]);
+}
+
+export async function deleteSavingsPot(formData: FormData) {
+  const { wedding } = await requireWedding();
+  const id = String(formData.get("id") ?? "");
+  if (!id) return;
+  const [savings, payments, items, gifts] = await Promise.all([
+    prisma.savingsEntry.count({ where: { weddingId: wedding.id, side: id } }),
+    prisma.payment.count({ where: { weddingId: wedding.id, paidBy: id } }),
+    prisma.budgetItem.count({ where: { weddingId: wedding.id, paidBy: id } }),
+    prisma.seserahanItem.count({ where: { weddingId: wedding.id, buyer: id } }),
+  ]);
+  if (savings + payments + items + gifts > 0) redirect("/app/budget?tab=tabungan&pot=terpakai");
+  await prisma.savingsPot.deleteMany({ where: { id, weddingId: wedding.id } });
+  await touch(["/app/budget", "/app"]);
+}
+
 export async function createSeserahan(formData: FormData) {
   const { wedding } = await requireWedding();
   await prisma.seserahanItem.create({
@@ -582,7 +763,7 @@ export async function createSeserahan(formData: FormData) {
       category: String(formData.get("category") ?? "OTHER"),
       estimatedCost: parseMoney(formData.get("estimatedCost")),
       actualCost: parseMoney(formData.get("actualCost")),
-      buyer: String(formData.get("buyer") ?? "").trim() || null,
+      buyer: mapMoneySide(formData.get("buyer")),
       status: String(formData.get("status") ?? "PENDING"),
       notes: String(formData.get("notes") ?? "").trim() || null,
     },
@@ -596,42 +777,74 @@ export async function deleteSeserahan(id: string) {
   await touch(["/app/seserahan", "/app/budget", "/app"]);
 }
 
+export async function updateSeserahan(formData: FormData): Promise<void> {
+  const { wedding } = await requireWedding();
+  const id = String(formData.get("id") ?? "");
+  if (!id) return;
+  await prisma.seserahanItem.updateMany({
+    where: { id, weddingId: wedding.id },
+    data: {
+      name: String(formData.get("name") ?? "").trim(),
+      category: String(formData.get("category") ?? "OTHER"),
+      estimatedCost: parseMoney(formData.get("estimatedCost")),
+      actualCost: parseMoney(formData.get("actualCost")),
+      buyer: mapMoneySide(formData.get("buyer")),
+      status: String(formData.get("status") ?? "PENDING"),
+      notes: String(formData.get("notes") ?? "").trim() || null,
+    },
+  });
+  await touch(["/app/seserahan", "/app/budget", "/app"]);
+}
+
 export async function publicRsvp(slug: string, formData: FormData) {
   const wedding = await prisma.wedding.findUnique({ where: { invitationSlug: slug } });
   if (!wedding) return { error: "Undangan tidak ditemukan." };
   const name = String(formData.get("name") ?? "").trim();
   if (!name) return { error: "Isi namamu, ya." };
   const attending = String(formData.get("attending") ?? "yes");
-  const pax = Math.max(1, Number(formData.get("pax") ?? 1) || 1);
+  const coming = attending !== "no";
+  const pax = withPlusOnePax(Math.max(1, Number(formData.get("pax") ?? 1) || 1), false, null);
   const token = String(formData.get("token") ?? "").trim();
   const mealPreference = mapMeal(String(formData.get("mealPreference") ?? "STANDARD"));
   const allergy = String(formData.get("allergy") ?? "").trim() || null;
-  const plusOneName = String(formData.get("plusOneName") ?? "").trim() || null;
-  const existing = token
-    ? await prisma.guest.findFirst({ where: { weddingId: wedding.id, inviteToken: token } })
-    : await prisma.guest.findFirst({ where: { weddingId: wedding.id, name: { equals: name } } });
-  const rsvpStatus = attending === "no" ? "DECLINED" : "CONFIRMED";
-  const payload = {
-    name,
-    rsvpStatus,
-    pax: attending === "no" ? 0 : pax,
+  const plusOneName = coming ? String(formData.get("plusOneName") ?? "").trim() || null : null;
+  const seats = coming ? withPlusOnePax(pax, Boolean(plusOneName), plusOneName) : undefined;
+
+  const rsvpPatch = {
+    rsvpStatus: coming ? "CONFIRMED" : "DECLINED",
     invitationStatus: "INVITED" as const,
-    mealPreference,
-    allergy,
-    plusOneName,
+    ...(coming
+      ? { pax: seats, mealPreference, allergy, plusOneName, plusOneAllowed: Boolean(plusOneName) }
+      : {}),
   };
-  if (existing) {
-    await prisma.guest.update({ where: { id: existing.id }, data: payload });
-  } else {
-    await prisma.guest.create({
-      data: {
-        weddingId: wedding.id,
-        inviteToken: guestToken(),
-        groupName: "OTHER",
-        notes: "RSVP dari undangan digital",
-        ...payload,
-      },
-    });
+
+  if (token) {
+    const guest = await prisma.guest.findFirst({ where: { weddingId: wedding.id, inviteToken: token } });
+    if (!guest) return { error: "Tautan undangan ini tidak cocok dengan daftar tamu." };
+    await prisma.guest.update({ where: { id: guest.id }, data: rsvpPatch });
+    return { message: coming ? "Syukurlah. Sampai ketemu di hari-H." : "Kami sudah catat. Terima kasih sudah mengabari." };
   }
-  return { message: attending === "no" ? "Kami sudah catat. Terima kasih sudah mengabari." : "Syukurlah. Sampai ketemu di hari-H." };
+
+  const guests = await prisma.guest.findMany({ where: { weddingId: wedding.id }, select: { id: true, name: true } });
+  const matches = guests.filter((guest) => guest.name.trim().toLowerCase() === name.toLowerCase());
+  if (matches.length > 1) {
+    return { error: "Nama ini ada lebih dari satu. Pakai tautan undangan yang dikirim ke kamu." };
+  }
+  if (matches.length === 1) {
+    await prisma.guest.update({ where: { id: matches[0].id }, data: rsvpPatch });
+    return { message: coming ? "Syukurlah. Sampai ketemu di hari-H." : "Kami sudah catat. Terima kasih sudah mengabari." };
+  }
+
+  await prisma.guest.create({
+    data: {
+      weddingId: wedding.id,
+      name,
+      inviteToken: guestToken(),
+      groupName: "OTHER",
+      notes: "RSVP dari undangan digital",
+      pax: seats ?? 1,
+      ...rsvpPatch,
+    },
+  });
+  return { message: coming ? "Syukurlah. Sampai ketemu di hari-H." : "Kami sudah catat. Terima kasih sudah mengabari." };
 }

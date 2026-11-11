@@ -205,6 +205,8 @@ function GuestCard({
             {" · "}
             {RSVP_LABELS[guest.rsvpStatus as keyof typeof RSVP_LABELS]}
             {guest.tableNumber ? ` · meja ${guest.tableNumber}` : ""}
+            {" · "}
+            <span className="text-primary">Ubah</span>
           </p>
           {guest.mealPreference !== "STANDARD" || guest.allergy ? (
             <p className="mt-1 text-xs text-muted-foreground">

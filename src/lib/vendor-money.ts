@@ -1,19 +1,23 @@
 import { prisma } from "@/lib/prisma";
 import { todayInApp } from "@/lib/utils";
 
-const ACTIVE = new Set(["BOOKED", "PAID", "NEGOTIATING"]);
+const BOOKED = new Set(["BOOKED", "PAID"]);
 
 function remainderTitle(name: string) {
   return `Pelunasan ${name}`;
 }
 
-export async function reconcileVendorMoney(weddingId: string, vendorId: string) {
+export async function reconcileVendorMoney(
+  weddingId: string,
+  vendorId: string,
+  options?: { seedDeposit?: boolean; paidBy?: string | null },
+) {
   const [vendor, wedding] = await Promise.all([
     prisma.vendor.findFirst({ where: { id: vendorId, weddingId } }),
     prisma.wedding.findUnique({ where: { id: weddingId } }),
   ]);
   if (!vendor || !wedding) return;
-  if (!ACTIVE.has(vendor.status) || vendor.price <= 0) return;
+  if (!BOOKED.has(vendor.status) || vendor.price <= 0) return;
 
   let item = await prisma.budgetItem.findFirst({ where: { weddingId, vendorId: vendor.id } });
   if (!item) {
@@ -22,16 +26,9 @@ export async function reconcileVendorMoney(weddingId: string, vendorId: string) 
     });
   }
   if (item) {
-    await prisma.budgetItem.update({
-      where: { id: item.id },
-      data: {
-        vendorId: vendor.id,
-        name: vendor.name,
-        category: vendor.category,
-        estimatedCost: vendor.price,
-        actualCost: Math.max(item.actualCost || item.estimatedCost, vendor.price),
-      },
-    });
+    if (item.vendorId !== vendor.id) {
+      await prisma.budgetItem.update({ where: { id: item.id }, data: { vendorId: vendor.id } });
+    }
   } else {
     item = await prisma.budgetItem.create({
       data: {
@@ -41,40 +38,47 @@ export async function reconcileVendorMoney(weddingId: string, vendorId: string) 
         category: vendor.category,
         estimatedCost: vendor.price,
         actualCost: vendor.price,
-        paidAmount: vendor.deposit,
+        paidAmount: 0,
       },
     });
   }
 
-  const payments = await prisma.payment.findMany({ where: { weddingId, vendorId: vendor.id } });
-  const paidSum = payments.filter((row) => row.paidDate).reduce((sum, row) => sum + row.amount, 0);
-  const unpaid = payments.filter((row) => !row.paidDate);
-  const today = todayInApp();
+  let payments = await prisma.payment.findMany({ where: { weddingId, vendorId: vendor.id } });
+  let paidSum = payments.filter((row) => row.paidDate).reduce((sum, row) => sum + row.amount, 0);
+  const seedGap = Math.min(vendor.price, vendor.deposit) - paidSum;
 
-  let cashPaid = paidSum;
-  if (vendor.deposit > paidSum) {
-    const gap = vendor.deposit - paidSum;
+  if (options?.seedDeposit && seedGap > 0) {
+    const today = todayInApp();
     await prisma.payment.create({
       data: {
         weddingId,
         vendorId: vendor.id,
         title: `DP ${vendor.name}`,
-        amount: gap,
+        amount: seedGap,
         dueDate: today,
         paidDate: today,
+        paidBy: options?.paidBy || (await sharedPotId(weddingId)),
       },
     });
-    cashPaid = vendor.deposit;
+    payments = await prisma.payment.findMany({ where: { weddingId, vendorId: vendor.id } });
+    paidSum = payments.filter((row) => row.paidDate).reduce((sum, row) => sum + row.amount, 0);
   }
-  cashPaid = Math.min(vendor.price, cashPaid);
 
-  await prisma.vendor.update({ where: { id: vendor.id }, data: { deposit: cashPaid } });
-  await prisma.budgetItem.update({ where: { id: item.id }, data: { paidAmount: cashPaid } });
+  const status = paidSum >= vendor.price ? "PAID" : vendor.status === "PAID" ? "BOOKED" : vendor.status;
+  if (status !== vendor.status) {
+    await prisma.vendor.update({ where: { id: vendor.id }, data: { status } });
+  }
+  if (item.paidAmount !== paidSum) {
+    await prisma.budgetItem.update({ where: { id: item.id }, data: { paidAmount: paidSum } });
+  }
 
-  const unpaidNeeded = Math.max(0, vendor.price - cashPaid);
-  const autoRemainder = unpaid.find((row) => row.title.startsWith("Pelunasan "));
-  if (unpaidNeeded <= 0) return;
-
+  const unpaid = payments.filter((row) => !row.paidDate);
+  const autoRemainder = unpaid.find((row) => row.title === remainderTitle(vendor.name));
+  const unpaidNeeded = Math.max(0, vendor.price - paidSum);
+  if (unpaidNeeded <= 0) {
+    if (autoRemainder) await prisma.payment.delete({ where: { id: autoRemainder.id } });
+    return;
+  }
   if (autoRemainder) {
     if (autoRemainder.amount !== unpaidNeeded) {
       await prisma.payment.update({
@@ -84,49 +88,32 @@ export async function reconcileVendorMoney(weddingId: string, vendorId: string) 
     }
     return;
   }
-  if (unpaid.length === 1 && unpaid[0].amount !== unpaidNeeded) {
-    await prisma.payment.update({ where: { id: unpaid[0].id }, data: { amount: unpaidNeeded } });
-    return;
-  }
-  if (unpaid.length === 0) {
-    const due = new Date(wedding.weddingDate);
-    due.setUTCDate(due.getUTCDate() - 30);
-    await prisma.payment.create({
-      data: {
-        weddingId,
-        vendorId: vendor.id,
-        title: remainderTitle(vendor.name),
-        amount: unpaidNeeded,
-        dueDate: due.getTime() > today.getTime() ? due : today,
-      },
-    });
-  }
-}
+  if (unpaid.length > 0) return;
 
-export async function applyPaidPayment(weddingId: string, paymentId: string) {
-  const payment = await prisma.payment.findFirst({ where: { id: paymentId, weddingId } });
-  if (!payment) return;
-  await prisma.payment.update({ where: { id: payment.id }, data: { paidDate: new Date() } });
-  if (!payment.vendorId) return;
-
-  const vendor = await prisma.vendor.findFirst({ where: { id: payment.vendorId, weddingId } });
-  if (!vendor) return;
-  const paid = await prisma.payment.findMany({
-    where: { weddingId, vendorId: vendor.id, paidDate: { not: null } },
-  });
-  const paidSum = paid.reduce((sum, row) => sum + row.amount, 0);
-  const paidExceptThis = paidSum - payment.amount;
-  const depositOutsideLedger = Math.max(0, vendor.deposit - paidExceptThis);
-  const cashPaid = Math.min(vendor.price || paidSum + depositOutsideLedger, paidSum + depositOutsideLedger);
-  await prisma.vendor.update({
-    where: { id: vendor.id },
+  const today = todayInApp();
+  const due = new Date(wedding.weddingDate);
+  due.setUTCDate(due.getUTCDate() - 30);
+  await prisma.payment.create({
     data: {
-      deposit: cashPaid,
-      status: vendor.price > 0 && cashPaid >= vendor.price ? "PAID" : vendor.status,
+      weddingId,
+      vendorId: vendor.id,
+      title: remainderTitle(vendor.name),
+      amount: unpaidNeeded,
+      dueDate: due.getTime() > today.getTime() ? due : today,
     },
   });
-  await prisma.budgetItem.updateMany({
-    where: { weddingId, vendorId: vendor.id },
-    data: { paidAmount: cashPaid },
-  });
+}
+
+async function sharedPotId(weddingId: string) {
+  const pots = await prisma.savingsPot.findMany({ where: { weddingId }, orderBy: { createdAt: "asc" } });
+  return pots.find((pot) => pot.name.trim().toLowerCase() === "bersama")?.id ?? null;
+}
+
+export async function applyPaidPayment(weddingId: string, paymentId: string, paidBy?: string | null) {
+  const payment = await prisma.payment.findFirst({ where: { id: paymentId, weddingId } });
+  if (!payment || payment.paidDate) return;
+  const pot = paidBy?.trim() || payment.paidBy;
+  if (!pot) return;
+  await prisma.payment.update({ where: { id: payment.id }, data: { paidDate: todayInApp(), paidBy: pot } });
+  if (payment.vendorId) await reconcileVendorMoney(weddingId, payment.vendorId);
 }

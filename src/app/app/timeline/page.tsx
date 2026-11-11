@@ -1,6 +1,6 @@
-import { createSong, createTimeline, deleteSong, deleteTimeline } from "@/app/actions/data";
+import { createSong, createTimeline, deleteSong, deleteTimeline, updateSong, updateTimeline } from "@/app/actions/data";
 import { EmptyState, PageHeader } from "@/components/chrome";
-import { DeleteForm, Field, Input, Select, Submit, Textarea } from "@/components/forms";
+import { DeleteForm, Field, Input, RowActions, Select, Submit, Textarea } from "@/components/forms";
 import { Modal } from "@/components/modal";
 import { SONG_MOMENTS, SONG_MOMENT_LABELS } from "@/lib/labels";
 import { prisma } from "@/lib/prisma";
@@ -69,7 +69,20 @@ export default async function TimelinePage() {
                 <p className="text-xs text-muted-foreground">{[row.location, row.pic].filter(Boolean).join(" · ")}</p>
                 {row.description ? <p className="mt-1 text-sm text-muted-foreground">{row.description}</p> : null}
               </div>
-              <DeleteForm action={deleteTimeline.bind(null, row.id)} />
+              <RowActions>
+                <Modal triggerLabel="Ubah" variant="ghost" title="Ubah acara">
+                  <form action={updateTimeline} className="grid gap-4">
+                    <input type="hidden" name="id" value={row.id} />
+                    <Field label="Jam"><Input name="time" defaultValue={row.time} required /></Field>
+                    <Field label="Judul"><Input name="title" defaultValue={row.title} required /></Field>
+                    <Field label="Lokasi"><Input name="location" defaultValue={row.location ?? ""} /></Field>
+                    <Field label="PIC"><Input name="pic" defaultValue={row.pic ?? ""} /></Field>
+                    <Field label="Deskripsi"><Textarea name="description" defaultValue={row.description ?? ""} /></Field>
+                    <Submit>Simpan</Submit>
+                  </form>
+                </Modal>
+                <DeleteForm action={deleteTimeline.bind(null, row.id)} />
+              </RowActions>
             </li>
           ))}
         </ol>
@@ -118,7 +131,25 @@ export default async function TimelinePage() {
                     {SONG_MOMENT_LABELS[row.moment as keyof typeof SONG_MOMENT_LABELS] ?? row.moment}
                   </p>
                 </div>
-                <DeleteForm action={deleteSong.bind(null, row.id)} />
+                <RowActions>
+                  <Modal triggerLabel="Ubah" variant="ghost" title="Ubah lagu">
+                    <form action={updateSong} className="grid gap-4">
+                      <input type="hidden" name="id" value={row.id} />
+                      <Field label="Judul lagu"><Input name="title" defaultValue={row.title} required /></Field>
+                      <Field label="Artis"><Input name="artist" defaultValue={row.artist ?? ""} /></Field>
+                      <Field label="Momen">
+                        <Select name="moment" defaultValue={row.moment}>
+                          {SONG_MOMENTS.map((m) => (
+                            <option key={m} value={m}>{SONG_MOMENT_LABELS[m]}</option>
+                          ))}
+                        </Select>
+                      </Field>
+                      <Field label="Catatan"><Textarea name="notes" defaultValue={row.notes ?? ""} /></Field>
+                      <Submit>Simpan</Submit>
+                    </form>
+                  </Modal>
+                  <DeleteForm action={deleteSong.bind(null, row.id)} />
+                </RowActions>
               </li>
             ))}
           </ul>

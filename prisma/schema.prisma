@@ -77,7 +77,9 @@ model Wedding {
   songs          Song[]
   reminders      Reminder[]
   savings        SavingsEntry[]
-  seserahanItems SeserahanItem[]
+  savingsPots      SavingsPot[]
+  budgetCategories BudgetCategory[]
+  seserahanItems   SeserahanItem[]
   partnerInvites PartnerInvite[]
 }
 
@@ -103,6 +105,7 @@ model Task {
   completed   Boolean   @default(false)
   completedAt DateTime?
   priority    String    @default("MEDIUM")
+  assignee    String    @default("SHARED")
   notes       String?
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
@@ -118,6 +121,7 @@ model BudgetItem {
   actualCost    Int      @default(0)
   paidAmount    Int      @default(0)
   vendorId      String?
+  paidBy        String?
   notes         String?
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
@@ -132,6 +136,7 @@ model Payment {
   dueDate   DateTime
   paidDate  DateTime?
   vendorId  String?
+  paidBy    String?
   notes     String?
   createdAt DateTime  @default(now())
   updatedAt DateTime  @updatedAt
@@ -231,6 +236,27 @@ model Reminder {
   notes     String?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+}
+
+model BudgetCategory {
+  id        String   @id @default(cuid())
+  weddingId String
+  wedding   Wedding  @relation(fields: [weddingId], references: [id], onDelete: Cascade)
+  name      String
+  sortOrder Int      @default(0)
+  createdAt DateTime @default(now())
+
+  @@index([weddingId])
+}
+
+model SavingsPot {
+  id        String   @id @default(cuid())
+  weddingId String
+  wedding   Wedding  @relation(fields: [weddingId], references: [id], onDelete: Cascade)
+  name      String
+  createdAt DateTime @default(now())
+
+  @@index([weddingId])
 }
 
 model SavingsEntry {

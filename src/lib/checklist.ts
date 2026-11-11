@@ -70,6 +70,8 @@ const SIPIL: TaskTemplate[] = [
 export const KUA_TASK_TITLES = KUA.map((task) => task.title);
 export const SIPIL_TASK_TITLES = SIPIL.map((task) => task.title);
 export const DOWRY_TASK_TITLES = SHARED.filter((task) => task.category === "DOWRY").map((task) => task.title);
+export const OPEN_GUEST_TASK = "Siapkan alur tamu terbuka";
+export const CLOSED_GUEST_TASK = "Kunci daftar tamu tertutup";
 
 export function buildChecklist(input: {
   weddingDate: Date;
@@ -80,7 +82,7 @@ export function buildChecklist(input: {
     input.weddingType === "OPEN"
       ? [
           {
-            title: "Siapkan alur tamu terbuka",
+            title: OPEN_GUEST_TASK,
             description: "Karena acaranya terbuka, tentukan jam ramai, welcome drink, dan siapa jaga meja undangan.",
             category: "LOGISTICS" as const,
             priority: "MEDIUM" as const,
@@ -89,7 +91,7 @@ export function buildChecklist(input: {
         ]
       : [
           {
-            title: "Kunci daftar tamu tertutup",
+            title: CLOSED_GUEST_TASK,
             description: "Acara tertutup: tamu di luar daftar tidak masuk. Security dan welcome desk harus satu suara.",
             category: "INVITATION" as const,
             priority: "HIGH" as const,

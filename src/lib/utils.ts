@@ -37,7 +37,12 @@ export function toDateInput(value: Date | string | null | undefined) {
   if (!value) return "";
   const date = typeof value === "string" ? new Date(value) : value;
   if (Number.isNaN(date.getTime())) return "";
-  return date.toISOString().slice(0, 10);
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: APP_TIME_ZONE,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(date);
 }
 
 export function startOfUtcDay(value: Date | string) {
@@ -56,7 +61,7 @@ export function formatLongDate(value: Date | string) {
     day: "numeric",
     month: "long",
     year: "numeric",
-    timeZone: "UTC",
+    timeZone: APP_TIME_ZONE,
   }).format(typeof value === "string" ? new Date(value) : value);
 }
 
@@ -65,7 +70,7 @@ export function formatShortDate(value: Date | string) {
     day: "numeric",
     month: "short",
     year: "numeric",
-    timeZone: "UTC",
+    timeZone: APP_TIME_ZONE,
   }).format(typeof value === "string" ? new Date(value) : value);
 }
 
