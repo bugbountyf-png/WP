@@ -253,22 +253,11 @@ export function budgetTotals(input: {
   seserahan?: BudgetSeserahan[];
 }) {
   const plans = buildPlans(input);
-  const { used, groups } = assignPayments(plans, input.payments);
   let estimated = 0;
-  let itemActual = 0;
-  let remainingPay = 0;
-
-  plans.forEach((plan, index) => {
+  let anggaran = 0;
+  plans.forEach((plan) => {
     estimated += plan.estimated;
-    itemActual += plan.cost;
-    const cash = paidSum(groups[index]) + Math.max(0, plan.recordedPaid - paidSum(groups[index]));
-    const still = Math.max(0, plan.cost - cash);
-    const scheduled = groups[index].filter((row) => !row.paidDate).reduce((sum, row) => sum + row.amount, 0);
-    remainingPay += still + Math.max(0, scheduled - still);
-  });
-
-  input.payments.forEach((row, index) => {
-    if (!used.has(index) && !row.paidDate) remainingPay += row.amount;
+    anggaran += plan.cost;
   });
 
   const paymentUnpaid = input.payments.filter((row) => !row.paidDate).reduce((sum, row) => sum + row.amount, 0);
@@ -283,8 +272,9 @@ export function budgetTotals(input: {
   }
 
   const paid = paymentPaid + extraPaid + seserahanPaid;
-  const actual = Math.max(itemActual, paid + remainingPay);
-  const allocated = Math.max(estimated, actual);
+  const allocated = estimated;
+  const actual = anggaran;
+  const remainingPay = Math.max(0, anggaran - paid);
   const saved = (input.savings ?? []).reduce((sum, row) => sum + row.amount, 0);
 
   return {

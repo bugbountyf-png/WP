@@ -48,7 +48,7 @@ export default async function BudgetPage({
     prisma.vendor.findMany({ where: { weddingId: wedding.id } }),
     prisma.seserahanItem.findMany({ where: { weddingId: wedding.id } }),
   ]);
-  const { allocated, actual, paid, remainingPay, paymentUnpaid } = budgetTotals({
+  const { allocated, actual, paid, remainingPay } = budgetTotals({
     items,
     payments,
     savings,
@@ -211,7 +211,7 @@ export default async function BudgetPage({
       <div className="gutter mb-3">
         <Modal triggerLabel="Ubah plafon" variant="ghost" title="Plafon budget">
           <form action={updatePlafon} className="grid gap-4">
-            <Field label="Total budget" hint="Angka ini yang jadi plafon di kartu atas.">
+            <Field label="Total budget" hint="Plafon adalah rencana total budgeting.">
               <Input name="totalBudget" inputMode="numeric" defaultValue={String(wedding.totalBudget)} required />
             </Field>
             <Submit>Simpan plafon</Submit>
@@ -225,12 +225,12 @@ export default async function BudgetPage({
           value={formatRupiah(allocated)}
           hint={wedding.totalBudget ? `${Math.round((allocated / wedding.totalBudget) * 100)}% dari plafon` : undefined}
         />
-        <Stat label="Aktual" value={formatRupiah(actual)} />
+        <Stat label="Aktual" value={formatRupiah(actual)} hint="Harga aktual. Pos yang belum diisi mengikuti perkiraan." />
         <Stat label="Sudah dibayar" value={formatRupiah(paid)} />
         <Stat
           label="Sisa pelunasan"
           value={formatRupiah(remainingPay)}
-          hint={paymentUnpaid > 0 ? "rencana yang belum lunas" : undefined}
+          hint="Anggaran dikurangi yang sudah dibayar."
         />
         <Stat label="Saldo rekening" value={formatRupiah(pots.reduce((sum, pot) => sum + pot.balance, 0))} hint={`setor ${formatRupiah(pots.reduce((sum, pot) => sum + pot.deposited, 0))} · keluar ${formatRupiah(pots.reduce((sum, pot) => sum + pot.spent, 0))}`} />
         {pots.map((pot) => (
@@ -239,7 +239,7 @@ export default async function BudgetPage({
       </div>
       <div className="gutter mt-4">
         <PotBalances pots={pots} initialPot={catalog.some((pot) => pot.id === rekening) ? rekening! : null} />
-        <p className="mt-2 text-xs text-muted-foreground">Saldo = saldo awal dikurangi yang terpakai. Ketuk rekening untuk melihat uangnya pergi ke mana.</p>
+        <p className="mt-2 text-xs text-muted-foreground">Saldo rekening = total dana masuk dikurangi yang sudah dibayar. Ketuk rekening untuk melihat uangnya pergi ke mana.</p>
       </div>
       <div className="gutter mt-6 flex gap-2 text-sm">
         <a href="/app/budget" className={`shrink-0 rounded-full px-3 py-1.5 ${!showPayments && !showSavings ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground"}`}>
@@ -262,7 +262,7 @@ export default async function BudgetPage({
             <div className="mt-3 grid grid-cols-3 gap-2 text-xs">
               <p>Estimasi<br /><span className="text-sm font-medium">{formatRupiahCompact(allocated)}</span></p>
               <p>Sudah dibayar<br /><span className="text-sm font-medium">{formatRupiahCompact(paid)}</span></p>
-              <p>Sisa dana<br /><span className="text-sm font-medium">{formatRupiahCompact(Math.max(0, wedding.totalBudget - paid))}</span></p>
+              <p>Sisa plafon<br /><span className="text-sm font-medium">{formatRupiahCompact(Math.max(0, wedding.totalBudget - paid))}</span></p>
             </div>
             <div className="mt-3 h-2 overflow-hidden rounded-full bg-muted">
               <div className="h-full rounded-full bg-primary" style={{ width: `${paidPct}%` }} />
